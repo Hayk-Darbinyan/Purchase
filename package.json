@@ -1,0 +1,25 @@
+{
+  "name": "tender-spec-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that reads tender/procurement spec sheets (DOCX) and finds matching real products on the Armenian and global market.",
+  "main": "src/bot.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/bot.js",
+    "test:local": "node scripts/testLocal.js tests/fixtures/sample-tender.docx"
+  },
+  "dependencies": {
+    "telegraf": "4.16.3",
+    "mammoth": "1.12.2",
+    "cheerio": "1.2.0",
+    "axios": "1.20.0",
+    "@tavily/core": "0.7.9",
+    "dotenv": "17.4.2",
+    "p-queue": "6.6.2",
+    "node-cache": "5.1.2",
+    "winston": "3.19.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
