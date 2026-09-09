@@ -21,18 +21,11 @@ docxParser        → finds the header row by meaning (not fixed column
                      index), extracts one product row per data row
    │
    ▼
-categoryClassifier → keyword-scores the product into laptop/tablet,
-                     smartphone, TV/monitor, major appliance,
-                     headphones/audio, printer, or camera (else "unknown")
-   │
-   ▼
-specNormalizer     → turns the raw spec lines into {key, label, value}
-                     attributes, using a per-category alias dictionary
-   │
-   ▼
-queryBuilder       → builds a plain-language search query from the most
-                     identifying attributes (never invents a brand/model
-                     that wasn't in the spec sheet)
+extraction/index.js → tries AI-based extraction first (Gemini); if no
+                     API key is set or the call fails, falls back to
+                     the rule-based extractor automatically. Either
+                     path produces the same output shape, so nothing
+                     downstream needs to know which one ran.
    │
    ▼
 search/index.js    → Armenian store domains (Tavily) → broader Armenian
@@ -50,6 +43,70 @@ telegramFormatter  → one MarkdownV2 message per product: name, brand,
 
 Every module in the chain is independent and swappable — see "Extending
 it" below.
+
+## Spec extraction: AI-based (primary) vs. rule-based (fallback)
+
+The original version of this bot extracted specs with hand-written
+rules: a fixed keyword list decided the product category, and a fixed
+per-category field dictionary decided which lines mattered. That works
+fine for the categories I anticipated, but a genuinely new kind of
+product falls through as "unknown" with no real field recognition.
+
+Extraction now goes through **Gemini (`gemini-3-flash`)** first
+(`src/extraction/aiSpecExtractor.js`): it's given the raw spec text —
+in whatever mix of Armenian, Russian, and English it happens to be
+written in — and asked to decide for itself, from context, which
+details actually matter for finding a real product, with no
+predefined field list or category list. It returns:
+
+```json
+{
+  "productType": "2-in-1 detachable tablet-laptop",
+  "characteristics": [
+    { "label": "Screen", "value": "13-inch touchscreen, 2880x1920, 3:2" },
+    { "label": "CPU", "value": "Qualcomm Snapdragon X Plus or Intel Core Ultra 7" }
+  ],
+  "searchQuery": "13 inch 2-in-1 detachable tablet laptop touchscreen ..."
+}
+```
+
+**If `GEMINI_API_KEY` isn't set, or a call fails for any reason** (rate
+limit, network blip, malformed response), extraction transparently
+falls back to the original rule-based chain
+(`categoryClassifier.js` → `specNormalizer.js` → `queryBuilder.js`,
+still there, unchanged) so the bot keeps working — just with the old,
+narrower extraction quality on whichever product hit the fallback.
+`src/extraction/index.js` is the one place that decides which path ran;
+everything downstream (search, verification, formatting) is completely
+unaware of which one produced its input, because both paths return the
+same `{ attributes, rawLines, category }` shape.
+
+**Why Gemini specifically**: a dedicated Armenian-language LLM
+benchmark (ArmBench-LLM 1.0, Metric AI Lab) rates Gemini 3 Flash as the
+best overall value for Armenian-language tasks among tested models.
+It also has a genuinely permanent free tier (not a burn-down trial —
+usable indefinitely for dev/test with no card on file), a straightforward
+upgrade path (enable billing on the same project for higher throughput),
+and structured JSON-schema output so responses parse reliably.
+`GEMINI_MODEL` in `.env` lets you swap to `gemini-3.1-flash-lite`
+(cheaper/faster, slightly lower quality) if you hit free-tier rate
+limits often.
+
+**What I could and couldn't verify here**: I don't have a live
+`GEMINI_API_KEY` in this sandbox (its network access is limited to
+package registries), so I could not run a real extraction call. What I
+did verify:
+- The rule-based fallback path runs correctly end-to-end against your
+  actual sample file (`npm run test:local` with no `GEMINI_API_KEY` set).
+- The AI-success path's output shape is fully compatible with
+  everything downstream — I mocked `extractSpecWithAI`'s return value
+  and ran it through `extraction/index.js` → `matchVerifier.js`, which
+  consumed it with zero errors, exactly as it would a real response.
+- The Gemini SDK call itself (model name, `responseSchema` structure,
+  `@google/genai` API surface) matches the current official SDK
+  (v2.21.0) — but do run one real product through `npm run test:local`
+  with your API key before trusting it on a full batch, the way you
+  would with any new integration.
 
 ## Important: what this bot can and can't promise
 
@@ -83,6 +140,9 @@ npm start
   *(You wrote "Tawily" in the brief — I've assumed you meant Tavily.
   If you actually meant a different service, the whole search layer is
   one file to swap — see `src/search/tavilySource.js`.)*
+- **GEMINI_API_KEY** — from [aistudio.google.com/apikey](https://aistudio.google.com/apikey),
+  free, no credit card. Powers the AI-based spec extraction described
+  above. Optional — leave blank to run on the rule-based extractor only.
 
 ### Testing without Telegram
 

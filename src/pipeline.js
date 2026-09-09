@@ -1,30 +1,27 @@
 const { parseDocx } = require("./parsers/docxParser");
-const { classifyCategory } = require("./extraction/categoryClassifier");
-const { normalizeProductSpec } = require("./extraction/specNormalizer");
-const { buildSearchQuery } = require("./identify/queryBuilder");
+const { extractProductSpec } = require("./extraction");
 const { findMarketMatch } = require("./search");
 const logger = require("./logger");
 
 /**
- * Runs one product all the way through: classify -> normalize -> build
- * query -> search -> rank. Never throws for a "no match" outcome — only
- * for genuine failures (e.g. the search API being unreachable), so one
- * bad product doesn't take down the whole batch.
+ * Runs one product all the way through: extract (AI, with rule-based
+ * fallback) -> search -> rank. Never throws for a "no match" outcome —
+ * only for genuine failures (e.g. the search API being unreachable), so
+ * one bad product doesn't take down the whole batch.
  */
 async function processProduct(product) {
-  const category = classifyCategory(product);
-  const normalized = normalizeProductSpec(product, category);
-  const query = buildSearchQuery(normalized);
+  const { normalized, query, method } = await extractProductSpec(product);
 
   logger.info("Processing product", {
     row: product.rowNumber,
     name: product.name,
-    category: category.categoryId,
+    category: normalized.category,
+    extractionMethod: method,
     query,
   });
 
   const result = await findMarketMatch(normalized, query);
-  return { product, normalized, category, query, result };
+  return { product, normalized, category: { categoryId: normalized.category }, query, extractionMethod: method, result };
 }
 
 /**
