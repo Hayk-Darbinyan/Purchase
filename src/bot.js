@@ -4,6 +4,7 @@ const { config, assertReadyForBot } = require("./config");
 const logger = require("./logger");
 const { runPipeline } = require("./pipeline");
 const { formatProductResult } = require("./format/telegramFormatter");
+const http = require("http");
 
 assertReadyForBot();
 
@@ -109,3 +110,14 @@ bot.launch().then(() => logger.info("Bot started"));
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
+const PORT = process.env.PORT || 3000;
+
+const healthServer = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("OK");
+});
+
+healthServer.listen(PORT, "0.0.0.0", () => {
+  logger.info(`HTTP health server listening on port ${PORT}`);
+});
