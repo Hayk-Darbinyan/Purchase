@@ -4,7 +4,7 @@ const { config, assertReadyForBot } = require("./config");
 const logger = require("./logger");
 const { runPipeline } = require("./pipeline");
 const { formatProductResult } = require("./format/telegramFormatter");
-const http = require("http");
+// const http = require("http");
 
 assertReadyForBot();
 
@@ -85,7 +85,18 @@ bot.on("document", async (ctx) => {
         continue;
       }
       const text = formatProductResult(r.product, r.result);
-      await ctx.replyWithMarkdownV2(text, { disable_web_page_preview: false });
+      try {
+        await ctx.replyWithMarkdownV2(text, { disable_web_page_preview: false });
+      } catch (sendErr) {
+        logger.warn("replyWithMarkdownV2 failed, falling back to plain text", {
+          error: sendErr.message,
+        });
+        // Strip MarkdownV2 backslash escapes and formatting tokens for clean plain text fallback
+        const plainText = text
+          .replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, "$1")
+          .replace(/[*_~`]/g, "");
+        await ctx.reply(plainText);
+      }
     }
   } catch (err) {
     logger.error("Failed to process uploaded document", { error: err.message });
@@ -111,13 +122,13 @@ bot.launch().then(() => logger.info("Bot started"));
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-const PORT = process.env.PORT || 3000;
+// const PORT = process.env.PORT || 3000;
 
-const healthServer = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("OK");
-});
+// const healthServer = http.createServer((req, res) => {
+//   res.writeHead(200, { "Content-Type": "text/plain" });
+//   res.end("OK");
+// });
 
-healthServer.listen(PORT, "0.0.0.0", () => {
-  logger.info(`HTTP health server listening on port ${PORT}`);
-});
+// healthServer.listen(PORT, "0.0.0.0", () => {
+//   logger.info(`HTTP health server listening on port ${PORT}`);
+// });

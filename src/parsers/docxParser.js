@@ -63,6 +63,27 @@ function cellText($, cellEl) {
   return $(cellEl).text().replace(/\s+/g, " ").trim();
 }
 
+function rowCells($, rowEl) {
+  return $(rowEl).children("td,th").toArray();
+}
+
+function rowCellsByColumn($, rowEl) {
+  const cellsByColumn = [];
+  let column = 0;
+
+  for (const cellEl of rowCells($, rowEl)) {
+    while (cellsByColumn[column]) column += 1;
+    const span = Math.max(1, Number.parseInt($(cellEl).attr("colspan"), 10) || 1);
+    cellsByColumn[column] = cellEl;
+    for (let offset = 1; offset < span; offset += 1) {
+      cellsByColumn[column + offset] = null;
+    }
+    column += span;
+  }
+
+  return cellsByColumn;
+}
+
 /**
  * Parses a tender-style DOCX buffer into a list of product rows.
  *
@@ -88,15 +109,16 @@ async function parseDocx(buffer) {
   const products = [];
 
   for (const table of tables) {
-    const rows = $(table).find("tr").toArray();
+    const rows = $(table).children("tbody,thead,tfoot").children("tr").toArray();
+    const tableRows = rows.length ? rows : $(table).children("tr").toArray();
 
     // 1. Find the header row: the first row whose cells resolve to a
     //    field map containing both `name` and `techSpec`.
     let headerRowIndex = -1;
     let fieldByColumn = [];
-    for (let ri = 0; ri < rows.length; ri++) {
-      const cells = $(rows[ri]).find("td,th").toArray();
-      const map = cells.map((c) => resolveField(cellText($, c)));
+    for (let ri = 0; ri < tableRows.length; ri++) {
+      const cells = rowCellsByColumn($, tableRows[ri]);
+      const map = cells.map((c) => (c ? resolveField(cellText($, c)) : null));
       if (isHeaderRow(Object.fromEntries(map.map((f, i) => [i, f])))) {
         headerRowIndex = ri;
         fieldByColumn = map;
@@ -113,9 +135,15 @@ async function parseDocx(buffer) {
     }
 
     // 2. Walk data rows below the header.
-    for (let ri = headerRowIndex + 1; ri < rows.length; ri++) {
-      const cells = $(rows[ri]).find("td,th").toArray();
+    for (let ri = headerRowIndex + 1; ri < tableRows.length; ri++) {
+      const cells = rowCellsByColumn($, tableRows[ri]);
       if (!cells.length) continue;
+
+      const rowFieldMap = cells.map((c) => (c ? resolveField(cellText($, c)) : null));
+      if (isHeaderRow(Object.fromEntries(rowFieldMap.map((f, i) => [i, f])))) {
+        fieldByColumn = rowFieldMap;
+        continue;
+      }
 
       const product = {
         rowNumber: null,
@@ -130,6 +158,7 @@ async function parseDocx(buffer) {
       };
 
       cells.forEach((cellEl, ci) => {
+        if (!cellEl) return;
         const field = fieldByColumn[ci];
         if (!field) return;
         if (field === "techSpec") {

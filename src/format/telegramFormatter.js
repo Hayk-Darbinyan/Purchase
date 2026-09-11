@@ -34,14 +34,39 @@ function guessBrandModelFromTitle(title) {
 function formatProductResult(product, result) {
   const header = `*${escapeMdV2(`Product ${product.rowNumber || ""}: ${product.name}`)}*`;
 
-  if (!result.ranked.length) {
+  if (!result || !result.ranked || !result.ranked.length) {
     return (
       `${header}\n` +
       `❌ ${escapeMdV2(
-        "No reliable market listing was found for this specification, on the Armenian or global market."
+        "No matching product page was found across Armenian stores for this specification."
       )}\n` +
       `_${escapeMdV2("You may need to search manually or relax the spec constraints.")}_`
     );
+  }
+
+  // When multiple matches are found (e.g. via Google AI Mode)
+  if (result.ranked.length > 1) {
+    let text = `${header}\n`;
+    text += `_${escapeMdV2(`Found ${result.ranked.length} matching products across Armenian stores:`)}_\n\n`;
+
+    result.ranked.forEach((r, idx) => {
+      const listing = r.listing;
+      const { brand, model } = guessBrandModelFromTitle(listing.title);
+      const label = confidenceLabel(r.confidence);
+      const pct = Math.round(r.confidence * 100);
+
+      text += `*${idx + 1}\\. ${escapeMdV2(listing.title)}*\n`;
+      if (listing.store && listing.store !== "google.com") {
+        text += `🏪 *Store:* ${escapeMdV2(listing.store)}\n`;
+      }
+      text += `🔗 *URL:* ${formatUrl(listing.url)}\n`;
+      if (listing.content && listing.content !== listing.title) {
+        text += `📝 *Specs:* ${escapeMdV2(listing.content.slice(0, 180))}\n`;
+      }
+      text += `🎯 *Match:* ${escapeMdV2(`${label} (${pct}%)`)}\n\n`;
+    });
+
+    return text.trim();
   }
 
   const top = result.ranked[0];
@@ -49,12 +74,14 @@ function formatProductResult(product, result) {
   const label = confidenceLabel(top.confidence);
   const pct = Math.round(top.confidence * 100);
 
-  const scopeNote =
-    result.stage === "global"
-      ? "_No Armenian listing met the confidence threshold — showing best global match._\n"
-      : "";
+  let scopeNote = "";
+  if (result.stage === "global") {
+    scopeNote = `_${escapeMdV2("No Armenian listing met the confidence threshold — showing best global match.")}_\n`;
+  } else if (result.stage === "google_ai_mode") {
+    scopeNote = `_${escapeMdV2("Sourced via Google AI Mode.")}_\n`;
+  }
 
-  const mismatchNote = top.mismatched.length
+  const mismatchNote = top.mismatched && top.mismatched.length
     ? `⚠️ ${escapeMdV2(
         `Possible mismatch on: ${top.mismatched.join(", ")}`
       )}\n`
@@ -72,7 +99,7 @@ function formatProductResult(product, result) {
     `*URL:* ${formatUrl(top.listing.url)}\n` +
     `*Match confidence:* ${escapeMdV2(`${label} (${pct}%)`)}\n` +
     `${mismatchNote}`
-  );
+  ).trim();
 }
 
 module.exports = { formatProductResult, escapeMdV2 };
