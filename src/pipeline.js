@@ -7,10 +7,21 @@ const logger = require("./logger");
  */
 function buildGoogleAiPrompt(product) {
   const name = (product.name || "").trim();
-  const techSpec = (
+  let techSpec = (
     product.techSpecRaw ||
     (product.techSpecLines || []).join("\n")
   ).trim();
+
+  // Strip boilerplate legal/delivery text from the end of tender specs if present
+  const cutoffMatch = techSpec.match(/\n\s*(?:Այլ պայմաններ|Պահանջվող փաստաթղթեր|Երաշխիքային|Մատակարարման)/i);
+  if (cutoffMatch && cutoffMatch.index > 100) {
+    techSpec = techSpec.slice(0, cutoffMatch.index).trim();
+  }
+
+  // Cap at 1200 characters to ensure safe URL length with room for template text
+  if (techSpec.length > 1200) {
+    techSpec = techSpec.slice(0, 1200) + '...';
+  }
 
   return (
     `Carefully search for all products in Armenian stores that match the following technical specification.\n` +

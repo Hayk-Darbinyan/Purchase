@@ -26,29 +26,29 @@ class GoogleAiModeSource extends MarketSource {
       return [];
     }
 
-    try {
-      const data = await new Promise((resolve, reject) =>
-        getJson(
-          {
-            engine: 'google_ai_mode',
-            q: query,
-            api_key: apiKey,
-            hl: options.hl || 'hy',
-            gl: options.gl || 'am',
-          },
-          (json) => {
-            if (json.error) {
-              reject(new Error(json.error));
-            } else {
-              resolve(json);
-            }
-          }
-        )
-      );
+    // Google / SerpApi GET request URLs have length limits.
+    // Truncate overly long queries (~1500 chars) to prevent HTTP 400 URI Too Long.
+    const safeQuery = query.length > 1500 ? query.slice(0, 1500) : query;
 
-      return this.transformResponse(data, query);
+    try {
+      const data = await getJson({
+        engine: 'google_ai_mode',
+        q: safeQuery,
+        api_key: apiKey,
+        hl: options.hl || 'hy',
+        gl: options.gl || 'am',
+      });
+
+      if (!data) return [];
+      if (data.error) {
+        logger.warn('SerpApi returned error', { error: data.error });
+        return [];
+      }
+
+      return this.transformResponse(data, safeQuery);
     } catch (err) {
-      logger.error('SerpApi Google AI Mode search failed', { error: err.message });
+      const errMsg = (err && (err.message || (typeof err === 'string' ? err : JSON.stringify(err)))) || 'Unknown SerpApi error';
+      logger.error('SerpApi Google AI Mode search failed', { error: errMsg });
       return [];
     }
   }

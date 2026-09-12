@@ -7,13 +7,19 @@
   "scripts": {
     "start": "node src/bot.js",
     "test": "node --test tests/googleAiModeSource.test.js tests/telegramFormatter.test.js",
-    "test:local": "node scripts/testLocal.js tests/fixtures/sample-tender.docx"
+    "test:local": "node scripts/testLocal.js tests/fixtures/sample-tender.docx",
+    "extract:docx": "node scripts/extractDocxData.js"
   },
   "dependencies": {
+    "adm-zip": "^0.6.1",
     "axios": "1.20.0",
     "cheerio": "1.2.0",
+    "docx": "^9.7.1",
     "dotenv": "17.4.2",
-    "mammoth": "1.12.2",
+    "mammoth": "^1.12.2",
+    "node-cron": "^4.6.0",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.63.0",
     "serpapi": "^2.2.1",
     "telegraf": "4.16.3",
     "winston": "3.19.0"
@@ -22,4 +28,3 @@
     "node": ">=18.0.0"
   }
 }
-
