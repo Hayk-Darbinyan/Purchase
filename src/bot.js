@@ -5,9 +5,25 @@ const { registerHandlers } = require("./bot/botHandlers");
 const { startScheduler } = require("./scheduler");
 const http = require("http");
 
+const https = require("https");
+
 assertReadyForBot();
 
-const bot = new Telegraf(config.telegramBotToken);
+// Cloud platforms (Render, Heroku, AWS) can close idle TCP connections,
+// causing 'socket hang up' on file uploads. Configure robust HTTPS agent.
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 10000,
+  timeout: 60000,
+  noDelay: true,
+});
+
+const bot = new Telegraf(config.telegramBotToken, {
+  telegram: {
+    agent: httpsAgent,
+    attachmentAgent: httpsAgent,
+  },
+});
 
 // ── Register all bot handlers (buttons, commands, document uploads) ──────────
 registerHandlers(bot);

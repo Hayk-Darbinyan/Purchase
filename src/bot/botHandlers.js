@@ -316,15 +316,31 @@ async function handleNormalize(ctx, doc) {
     // Clear session
     userSession.delete(String(ctx.from.id));
 
-    await ctx.telegram.sendDocument(ctx.chat.id,
-      { source: normalizedBuffer, filename: `normalized_${doc.file_name || 'tender.docx'}` },
-      { caption: '✅ Normalized DOCX ready.' }
-    );
+    // Send document with retry to handle intermittent socket hang ups on cloud hosts
+    const outFilename = `normalized_${doc.file_name || 'tender.docx'}`;
+    let sent = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await ctx.telegram.sendDocument(
+          ctx.chat.id,
+          { source: normalizedBuffer, filename: outFilename },
+          { caption: '✅ Normalized DOCX ready.' }
+        );
+        sent = true;
+        break;
+      } catch (uploadErr) {
+        logger.warn(`sendDocument attempt ${attempt} failed: ${uploadErr.message}`);
+        if (attempt === 3) throw uploadErr;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
 
-    await ctx.telegram.editMessageText(
-      ctx.chat.id, statusMsg.message_id, undefined,
-      '✅ Done!', mainMenuKeyboard()
-    );
+    if (sent) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id, statusMsg.message_id, undefined,
+        '✅ Done!', mainMenuKeyboard()
+      ).catch(() => {});
+    }
   } catch (err) {
     logger.error('Normalize handler failed', { error: err.message });
     await ctx.reply(`❌ Failed to normalize document: ${err.message}`);
