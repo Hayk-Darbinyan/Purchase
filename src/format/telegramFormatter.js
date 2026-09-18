@@ -63,7 +63,6 @@ function formatProductResult(product, result) {
       if (listing.content && listing.content !== listing.title) {
         text += `📝 *Specs:* ${escapeMdV2(listing.content.slice(0, 180))}\n`;
       }
-      text += `🎯 *Match:* ${escapeMdV2(`${label} (${pct}%)`)}\n\n`;
     });
 
     return text.trim();

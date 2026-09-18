@@ -3,6 +3,11 @@ require("dotenv").config();
 const config = {
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
   serpApiKey: process.env.SERPAPI_API_KEY || "",
+  exaApiKey: process.env.EXA_API_KEY || "",
+
+  // Search provider: 'serp' (default) | 'exa'
+  productSearchProvider: (process.env.PRODUCT_SEARCH_PROVIDER || "serp").toLowerCase().trim(),
+
   maxFileSizeMb: Number(process.env.MAX_FILE_SIZE_MB || 15),
   logLevel: process.env.LOG_LEVEL || "info",
 
@@ -18,7 +23,14 @@ const config = {
 function assertReadyForBot() {
   const missing = [];
   if (!config.telegramBotToken) missing.push("TELEGRAM_BOT_TOKEN");
-  if (!config.serpApiKey) missing.push("SERPAPI_API_KEY");
+
+  if (config.productSearchProvider === "exa") {
+    if (!config.exaApiKey) missing.push("EXA_API_KEY");
+  } else {
+    // Default: serp
+    if (!config.serpApiKey) missing.push("SERPAPI_API_KEY");
+  }
+
   if (missing.length) {
     throw new Error(
       `Missing required environment variable(s): ${missing.join(

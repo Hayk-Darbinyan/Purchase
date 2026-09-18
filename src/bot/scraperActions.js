@@ -5,10 +5,10 @@
  *   1. Launch browser → collectAllTenders (all tenders, no keyword filter)
  *   2. Save to tenderStore; compare with previous scrape
  *   3. For each newly detected tender: send Telegram notification
- *   4. Apply keyword filter to the fresh batch
- *   5. For each matched tender: download ZIP → extract DOCX →
- *      docxDataExtractor → generateNormalizedDocx → runPipeline (search)
- *      → send normalized DOCX + search results to Telegram
+ *   4. For each new tender: download ZIP → extract → check keyword in hraver.docx
+ *      – If NOT found: delete ZIP + extracted dir, move to next tender
+ *      – If found: extract structured data → normalize DOCX → run search pipeline
+ *        → send normalized DOCX + search results to Telegram
  *
  * Both the automatic daily scheduler and the "Manual Scrape" bot button
  * call `runFullScrape()` from this module.
@@ -28,6 +28,8 @@ const { extractDocxData } = require('../scraper/docxDataExtractor');
 const { generateNormalizedDocx } = require('../normalize/docxNormalizer');
 const { runPipeline } = require('../pipeline');
 const { formatProductResult } = require('../format/telegramFormatter');
+const { upsertTender } = require('../procurement/procurementStore');
+
 
 const DOWNLOAD_DIR = path.join(__dirname, '..', 'downloads');
 
@@ -57,12 +59,21 @@ function getKeywords() {
 }
 
 /**
- * Returns true when the tender name matches at least one keyword.
+ * Returns true when the given text matches at least one keyword.
  * Matching is case-insensitive substring check.
  */
-function matchesKeyword(name, keywords) {
-  const lower = (name || '').toLowerCase();
+function matchesKeyword(text, keywords) {
+  const lower = (text || '').toLowerCase();
   return keywords.some((kw) => lower.includes(kw));
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -73,47 +84,114 @@ async function sendTg(telegram, chatId, text) {
   try {
     await telegram.sendMessage(chatId, text, { parse_mode: 'HTML' });
   } catch (err) {
-    logger.warn('Failed to send Telegram message', { error: err.message });
+    logger.warn('Failed to send Telegram message in HTML mode, falling back to plain text', { error: err.message });
+    try {
+      const plain = text.replace(/<[^>]+>/g, '');
+      await telegram.sendMessage(chatId, plain);
+    } catch (fallbackErr) {
+      logger.error('Failed to send Telegram message fallback', { error: fallbackErr.message });
+    }
   }
 }
 
 /**
- * Processes one keyword-matched tender end-to-end:
- *   download ZIP → extract DOCX → normalize → search → send results
+ * Recursively deletes a directory (best-effort, no throw on failure).
+ */
+function deleteDir(dirPath) {
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch (err) {
+    logger.warn('Could not delete directory', { path: dirPath, error: err.message });
+  }
+}
+
+/**
+ * Deletes a file (best-effort, no throw on failure).
+ */
+function deleteFile(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    logger.warn('Could not delete file', { path: filePath, error: err.message });
+  }
+}
+
+/**
+ * Processes one tender end-to-end:
+ *   1. Download ZIP
+ *   2. Extract ZIP
+ *   3. Read hraver.docx and search for keyword
+ *      – If NOT found: delete ZIP + extracted dir, return false (skip)
+ *      – If found: continue with full processing pipeline
+ *   4. Extract structured data from DOCX
+ *   5. Generate normalized DOCX → save to procurementStore
+ *   6. Run search pipeline (AI Mode / Google SERP)
+ *   7. Send results to Telegram
  *
- * @param {object} tender       - { name, date, link }
+ * @param {object} tender       - { name, date, startDate, endDate, link }
  * @param {object} context      - { browser, telegram, chatId }
+ * @returns {Promise<boolean>}  - true if keyword matched & processed, false if skipped
  */
 async function processTender(tender, { browser, telegram, chatId }) {
   const detailPage = await browser.newPage();
+
   try {
-    logger.info('Processing keyword-matched tender', { name: tender.name, link: tender.link });
+    logger.info('Checking tender for keyword match', { name: tender.name, link: tender.link });
 
-    // ── 1. Download ZIP ─────────────────────────────────────────────────────
-    await sendTg(telegram, chatId,
-      `⏳ <b>Keyword match found:</b>\n${tender.name}\n\nDownloading...`);
-
+    // ── 1. Download ZIP ──────────────────────────────────────────────────────
     const zipPath = await downloadInviteZip(detailPage, tender.link, DOWNLOAD_DIR);
     if (!zipPath) {
-      await sendTg(telegram, chatId,
-        `⚠️ No invitation download found for:\n<b>${tender.name}</b>`);
-      return;
+      logger.info('No invitation download found, skipping tender', { name: tender.name });
+      return false;
     }
+    logger.info('ZIP downloaded', { name: tender.name, zipPath });
 
-    // ── 2. Extract DOCX files from ZIP ──────────────────────────────────────
+    // ── 2. Extract ZIP ───────────────────────────────────────────────────────
     const { extractDir, source, files } = await extractAndReadDocuments(zipPath);
+
     if (!files.length) {
-      await sendTg(telegram, chatId,
-        `⚠️ No readable documents found in the ZIP for:\n<b>${tender.name}</b>`);
-      return;
+      logger.info('No readable documents in ZIP, skipping tender', { name: tender.name });
+      deleteFile(zipPath);
+      deleteDir(extractDir);
+      return false;
     }
 
-    // Find the first hraver.docx (or any .docx if none named hraver)
-    let docxPath = files[0].path;
-    const hraverFile = files.find((f) => path.basename(f.path).toLowerCase() === 'hraver.docx');
-    if (hraverFile) docxPath = hraverFile.path;
+    // ── 3. Find hraver.docx and check for keyword ────────────────────────────
+    const keywords = getKeywords();
 
-    // ── 3. Extract structured data from DOCX ────────────────────────────────
+    // Prefer a file literally named "hraver.docx"; fall back to the first file
+    const hraverFile =
+      files.find((f) => path.basename(f.path).toLowerCase() === 'hraver.docx') || files[0];
+    const docxPath = hraverFile.path;
+    const hraverText = hraverFile.text;
+
+    const keywordFound = matchesKeyword(hraverText, keywords);
+
+    if (!keywordFound) {
+      logger.info('Keyword NOT found in hraver.docx — deleting files and skipping', {
+        name: tender.name,
+        keywords,
+      });
+      deleteFile(zipPath);
+      deleteDir(extractDir);
+      return false;
+    }
+
+    logger.info('Keyword found in hraver.docx — proceeding with full pipeline', {
+      name: tender.name,
+      keywords,
+    });
+
+    // Notify that a keyword match was found (now confirmed by file contents)
+    if (telegram && chatId) {
+      await sendTg(
+        telegram,
+        chatId,
+        `✅ <b>Keyword match found in hraver.docx:</b>\n${escapeHtml(tender.name)}\n\nProcessing...`
+      );
+    }
+
+    // ── 4. Extract structured data from DOCX ────────────────────────────────
     let extractedData;
     try {
       const { data, meta } = await extractDocxData(docxPath);
@@ -125,20 +203,30 @@ async function processTender(tender, { browser, telegram, chatId }) {
       });
     } catch (err) {
       logger.error('DOCX extraction failed', { name: tender.name, error: err.message });
-      await sendTg(telegram, chatId,
-        `❌ Failed to extract data from DOCX for:\n<b>${tender.name}</b>\n${err.message}`);
-      return;
+      if (telegram && chatId) {
+        await sendTg(
+          telegram,
+          chatId,
+          `❌ Failed to extract data from DOCX for:\n<b>${escapeHtml(tender.name)}</b>\n${escapeHtml(err.message)}`
+        );
+      }
+      return false;
     }
 
-    // ── 4. Generate normalized DOCX ─────────────────────────────────────────
+    // ── 5. Generate normalized DOCX ─────────────────────────────────────────
     let normalizedBuffer;
     try {
       normalizedBuffer = await generateNormalizedDocx(extractedData);
     } catch (err) {
       logger.error('DOCX normalization failed', { name: tender.name, error: err.message });
-      await sendTg(telegram, chatId,
-        `❌ Failed to generate normalized DOCX for:\n<b>${tender.name}</b>\n${err.message}`);
-      return;
+      if (telegram && chatId) {
+        await sendTg(
+          telegram,
+          chatId,
+          `❌ Failed to generate normalized DOCX for:\n<b>${escapeHtml(tender.name)}</b>\n${escapeHtml(err.message)}`
+        );
+      }
+      return false;
     }
 
     // Save normalized DOCX alongside the source
@@ -148,57 +236,130 @@ async function processTender(tender, { browser, telegram, chatId }) {
     );
     fs.writeFileSync(normalizedPath, normalizedBuffer);
 
-    // Send the normalized DOCX to the chat
-    await telegram.sendDocument(chatId, {
-      source: normalizedBuffer,
-      filename: `normalized_${path.basename(docxPath)}`,
-    }, {
-      caption: `📄 Normalized DOCX for:\n<b>${tender.name}</b>`,
-      parse_mode: 'HTML',
-    });
+    // ── Save to procurement store ────────────────────────────────────────────
+    // Calculate total price from procurement items table
+    let tenderPrice = 0;
+    let hasAnyPrice = false;
+    if (extractedData && Array.isArray(extractedData.procurementItems)) {
+      for (const item of extractedData.procurementItems) {
+        const rawPrice = item.price || item.unitPrice;
+        if (rawPrice) {
+          // Strip non-numeric characters (spaces, dots, commas used as separators)
+          const cleaned = String(rawPrice)
+            .replace(/\u00A0/g, '')
+            .replace(/\s/g, '')
+            .replace(/\./g, '')
+            .replace(/,/g, '.');
+          const num = parseFloat(cleaned);
+          if (!isNaN(num) && num > 0) {
+            tenderPrice += num;
+            hasAnyPrice = true;
+          }
+        }
+      }
+    }
+    if (!hasAnyPrice) {
+      tenderPrice = null;
+    }
 
-    // ── 5. Run search pipeline (AI Mode / Google SERP) ──────────────────────
-    await sendTg(telegram, chatId,
-      `🔍 Running market search for <b>${tender.name}</b>...`);
+    try {
+      upsertTender({
+        name: tender.name,
+        link: tender.link,
+        date: tender.date || null,
+        startDate: tender.startDate || null,
+        endDate: tender.endDate || null,
+        price: tenderPrice,
+        normalizedDocxPath: normalizedPath,
+      });
+      logger.info('Tender saved to procurement store', {
+        name: tender.name,
+        price: tenderPrice,
+        endDate: tender.endDate,
+      });
+    } catch (storeErr) {
+      logger.error('Failed to save tender to procurement store', {
+        name: tender.name,
+        error: storeErr.message,
+      });
+    }
+
+    if (telegram && chatId) {
+      await telegram.sendDocument(
+        chatId,
+        {
+          source: normalizedBuffer,
+          filename: `normalized_${path.basename(docxPath)}`,
+        },
+        {
+          caption: `📄 Normalized DOCX for:\n<b>${escapeHtml(tender.name)}</b>`,
+          parse_mode: 'HTML',
+        }
+      );
+    }
+
+    // ── 6. Run search pipeline (AI Mode / Google SERP) ──────────────────────
+    if (telegram && chatId) {
+      await sendTg(
+        telegram,
+        chatId,
+        `🔍 Running market search for <b>${escapeHtml(tender.name)}</b>...`
+      );
+    }
 
     try {
       const { products, warnings, results } = await runPipeline(normalizedBuffer);
 
-      for (const w of warnings) {
-        await sendTg(telegram, chatId, `⚠️ ${w}`);
-      }
-
-      if (!products.length) {
-        await sendTg(telegram, chatId,
-          `ℹ️ No product rows found in the normalized DOCX for:\n<b>${tender.name}</b>`);
-        return;
-      }
-
-      for (const r of results) {
-        if (r.error) {
-          await sendTg(telegram, chatId,
-            `❌ Search error for "${r.product.name}": ${r.error}`);
-          continue;
+      if (telegram && chatId) {
+        for (const w of warnings) {
+          await sendTg(telegram, chatId, `⚠️ ${escapeHtml(w)}`);
         }
-        const text = formatProductResult(r.product, r.result);
-        try {
-          await telegram.sendMessage(chatId, text, {
-            parse_mode: 'MarkdownV2',
-            disable_web_page_preview: false,
-          });
-        } catch {
-          // Strip MarkdownV2 escapes for plain-text fallback
-          const plain = text
-            .replace(/\\([_*[\]()~`>#+=|{}.!\\\-])/g, '$1')
-            .replace(/[*_~`]/g, '');
-          await sendTg(telegram, chatId, plain);
+
+        if (!products.length) {
+          await sendTg(
+            telegram,
+            chatId,
+            `ℹ️ No product rows found in the normalized DOCX for:\n<b>${escapeHtml(tender.name)}</b>`
+          );
+          return true;
+        }
+
+        for (const r of results) {
+          if (r.error) {
+            await sendTg(
+              telegram,
+              chatId,
+              `❌ Search error for "${r.product.name}": ${r.error}`
+            );
+            continue;
+          }
+          const text = formatProductResult(r.product, r.result);
+          try {
+            await telegram.sendMessage(chatId, text, {
+              parse_mode: 'MarkdownV2',
+              disable_web_page_preview: false,
+            });
+          } catch {
+            // Strip MarkdownV2 escapes for plain-text fallback
+            const plain = text
+              .replace(/\\([_*[\]()~`>#+=|{}.!\\\-])/g, '$1')
+              .replace(/[*_~`]/g, '');
+            await sendTg(telegram, chatId, plain);
+          }
         }
       }
     } catch (err) {
       logger.error('Pipeline search failed', { name: tender.name, error: err.message });
-      await sendTg(telegram, chatId,
-        `❌ Search failed for <b>${tender.name}</b>: ${err.message}`);
+      if (telegram && chatId) {
+        await sendTg(
+          telegram,
+          chatId,
+          `❌ Search failed for <b>${escapeHtml(tender.name)}</b>: ${escapeHtml(err.message)}`
+        );
+      }
     }
+
+    return true;
   } finally {
     await detailPage.close().catch(() => {});
   }
@@ -254,60 +415,76 @@ async function runFullScrape({ telegram, chatId, silent = false }) {
     // ── 3. Notify about new tenders ─────────────────────────────────────────
     if (telegram && chatId) {
       if (newTenders.length === 0) {
-        await sendTg(telegram, chatId,
+        await sendTg(
+          telegram,
+          chatId,
           `✅ <b>Scrape complete.</b>\n` +
-          `Total tenders: ${freshTenders.length}\n` +
-          `No new tenders since last scrape.`);
+            `Total tenders: ${freshTenders.length}\n` +
+            `No new tenders since last scrape.`
+        );
       } else {
-        await sendTg(telegram, chatId,
+        await sendTg(
+          telegram,
+          chatId,
           `✅ <b>Scrape complete.</b>\n` +
-          `Total: ${freshTenders.length} | 🆕 New: ${newTenders.length}`);
+            `Total: ${freshTenders.length} | 🆕 New: ${newTenders.length}\n` +
+            `Now checking each new tender's hraver.docx for keyword matches...`
+        );
 
         for (const t of newTenders) {
-          await sendTg(telegram, chatId,
+          await sendTg(
+            telegram,
+            chatId,
             `🆕 <b>New Tender</b>\n` +
-            `📋 ${t.name}\n` +
-            `📅 ${t.date || 'date unknown'}\n` +
-            `🔗 <a href="${t.link}">Open tender</a>`);
+              `📋 ${escapeHtml(t.name)}\n` +
+              `📅 ${escapeHtml(t.date || 'date unknown')}\n` +
+              `🔗 <a href="${t.link}">Open tender</a>`
+          );
         }
       }
     }
 
-    // ── 4. Keyword matching on the full fresh batch ─────────────────────────
+    // ── 4. Process every new tender — keyword checked inside hraver.docx ────
+    // (no upfront name-based filter; processTender handles keyword matching)
     const keywords = getKeywords();
-    const matchedTenders = freshTenders.filter((t) => matchesKeyword(t.name, keywords));
-    // Only process tenders that are NEW (to avoid re-processing every run)
-    const newMatchedTenders = newTenders.filter((t) => matchesKeyword(t.name, keywords));
-
-    logger.info('Keyword matching result', {
+    logger.info('Processing all new tenders (keyword check inside hraver.docx)', {
       keywords,
-      matched: matchedTenders.length,
-      newMatched: newMatchedTenders.length,
+      newTenders: newTenders.length,
     });
 
-    if (telegram && chatId && newMatchedTenders.length === 0 && newTenders.length > 0) {
-      await sendTg(telegram, chatId,
-        `ℹ️ No new keyword-matched tenders among the ${newTenders.length} new ones.`);
-    }
+    const matchedTenders = [];
 
-    // ── 5. Process each new keyword-matched tender ──────────────────────────
-    for (const tender of newMatchedTenders) {
+    for (const tender of newTenders) {
       try {
-        await processTender(tender, { browser, telegram, chatId });
+        const matched = await processTender(tender, { browser, telegram, chatId });
+        if (matched) matchedTenders.push(tender);
       } catch (err) {
         logger.error('Failed to process tender', { name: tender.name, error: err.message });
         if (telegram && chatId) {
-          await sendTg(telegram, chatId,
-            `❌ Error processing <b>${tender.name}</b>: ${err.message}`);
+          await sendTg(
+            telegram,
+            chatId,
+            `❌ Error processing <b>${escapeHtml(tender.name)}</b>: ${escapeHtml(err.message)}`
+          );
         }
       }
+    }
+
+    if (telegram && chatId && newTenders.length > 0) {
+      await sendTg(
+        telegram,
+        chatId,
+        `📊 <b>Processing complete.</b>\n` +
+          `Checked: ${newTenders.length} new tender(s)\n` +
+          `Keyword matches found: ${matchedTenders.length}`
+      );
     }
 
     return { freshTenders, newTenders, matchedTenders };
   } catch (err) {
     logger.error('Full scrape failed', { error: err.message });
     if (telegram && chatId) {
-      await sendTg(telegram, chatId, `❌ <b>Scrape failed:</b> ${err.message}`);
+      await sendTg(telegram, chatId, `❌ <b>Scrape failed:</b> ${escapeHtml(err.message)}`);
     }
     throw err;
   } finally {

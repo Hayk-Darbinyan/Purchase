@@ -70,6 +70,14 @@ function parseDate(dateStr) {
     return isNaN(dt.getTime()) ? null : dt;
   }
 
+  // YYYY-MM-DD HH:mm:ss
+  const ymdHms = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (ymdHms) {
+    const [, y, m, d, hh, mm, ss] = ymdHms;
+    const dt = new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}`);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
   // ISO / YYYY-MM-DD
   const iso = new Date(dateStr);
   return isNaN(iso.getTime()) ? null : iso;

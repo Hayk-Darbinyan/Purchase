@@ -7,10 +7,16 @@ const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
 
 function extractZip(zipPath) {
-  const extractDir = path.join(
-    path.dirname(zipPath),
-    path.basename(zipPath, path.extname(zipPath))
-  );
+  const ext = path.extname(zipPath);
+  let baseName = path.basename(zipPath, ext);
+  let extractDir = path.join(path.dirname(zipPath), baseName);
+
+  if (
+    path.resolve(extractDir) === path.resolve(zipPath) ||
+    (fs.existsSync(extractDir) && !fs.statSync(extractDir).isDirectory())
+  ) {
+    extractDir = `${extractDir}_extracted`;
+  }
   fs.mkdirSync(extractDir, { recursive: true });
 
   const zip = new AdmZip(zipPath);

@@ -25,39 +25,46 @@ async function findAllTendersOnPage(page) {
         const name = (link.textContent || '').trim();
         const href = link.href;
 
-        // Publication date — look for a <span> or <p> with a date-like pattern
-        // Common selectors observed on e-procurement.am listings
+        // Publication date and submission deadline — extracted from p.tender_time.
+        // Example source text:
+        //   "Հրапаракված է 2026-09-17 07:06:16-ից մinchev 2026-10-05 14:00:00 жamy nerarбali"
         let date = null;
-        const dateEl =
-          tender.querySelector('.date') ||
-          tender.querySelector('.cont_date') ||
-          tender.querySelector('span[class*="date"]') ||
-          tender.querySelector('p.date');
+        let startDate = null;
+        let endDate = null;
 
+        const dateEl = tender.querySelector('p.tender_time');
         if (dateEl) {
-          date = (dateEl.textContent || '').trim();
+          const text = (dateEl.textContent || '').trim();
+
+          // Try to extract the full "from … to …" range
+          // Example: "Հրապարակված է 2026-09-17 07:06:16-ից մինչեւ 2026-10-05 14:00:00 ժամը ներառյալ"
+          const fullRangeMatch =
+            text.match(/Հրապարակված\s+է\s+([\d-]+(?:\s+[\d:]+)?)-ից\s+մինչ[ևեւ]\s+([\d-]+(?:\s+[\d:]+)?)/i) ||
+            text.match(/(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)[^\d]+(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?)/);
+
+          if (fullRangeMatch) {
+            startDate = fullRangeMatch[1].trim();
+            endDate = fullRangeMatch[2].trim();
+            date = startDate; // preserve existing behaviour: date == publication date
+          } else {
+            // Fallback: extract just the first date as before
+            const match =
+              text.match(/Հրապարակված է\s+([\d-]+\s+[\d:]+)/i) ||
+              text.match(/Հրապարակված է\s+([\d-]+)/i) ||
+              text.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/) ||
+              text.match(/(\d{4}-\d{2}-\d{2})/);
+            date = match ? match[1].trim() : text;
+            startDate = date;
+          }
         }
 
-        // Fallback: scan all text nodes for a date pattern DD.MM.YYYY
-        if (!date) {
-          const tenderText = tender.textContent || '';
-          const match = tenderText.match(/\b(\d{2}\.\d{2}\.\d{4})\b/);
-          if (match) date = match[1];
-        }
-
-        // Try to find a direct download link (ZIP) on the listing card
-        let downloadLink = null;
-        const dlEl = tender.querySelector('a[href$=".zip"], a[download]');
-        if (dlEl) {
-          downloadLink = dlEl.href;
-        }
-
-        results.push({ name, date, link: href, downloadLink });
+        results.push({ name, date, startDate, endDate, link: href });
       }
       return results;
     }
   );
 }
+
 
 /**
  * Reads the pagination block and returns the "next page" URL, or null.
@@ -73,11 +80,11 @@ async function getNextPageUrl(page) {
 
 /**
  * Walks all listing pages starting at startUrl, following pagination,
- * and collects every tender { name, date, link, downloadLink }.
+ * and collects every tender { name, date, link }.
  *
  * @param {import('playwright').Page} page
  * @param {string} startUrl
- * @returns {Promise<Array<{name: string, date: string|null, link: string, downloadLink: string|null}>>}
+ * @returns {Promise<Array<{name: string, date: string|null, link: string}>>}
  */
 async function collectAllTenders(page, startUrl) {
   const all = [];

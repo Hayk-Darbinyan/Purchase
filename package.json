@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/bot.js",
-    "test": "node --test tests/googleAiModeSource.test.js tests/telegramFormatter.test.js",
+    "test": "node --test tests/googleAiModeSource.test.js tests/telegramFormatter.test.js tests/zipSpecExtractor.test.js",
     "test:local": "node scripts/testLocal.js tests/fixtures/sample-tender.docx",
     "extract:docx": "node scripts/extractDocxData.js"
   },
@@ -16,6 +16,7 @@
     "cheerio": "1.2.0",
     "docx": "^9.7.1",
     "dotenv": "17.4.2",
+    "exa-js": "^2.22.0",
     "mammoth": "^1.12.2",
     "node-cron": "^4.6.0",
     "pdf-parse": "^2.4.5",

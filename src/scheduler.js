@@ -14,6 +14,7 @@
 const cron = require('node-cron');
 const logger = require('./logger');
 const { runFullScrape } = require('./bot/scraperActions');
+const { startDeadlineNotifier, stopDeadlineNotifier } = require('./procurement/deadlineNotifier');
 
 // 09:30 AM Armenia time = 05:30 AM UTC (Armenia is UTC+4, no DST)
 const SCRAPE_CRON = '30 5 * * *';
@@ -60,6 +61,9 @@ function startScheduler({ telegram, chatId }) {
     }
   );
 
+  // Start deadline notifications scheduler (hourly checks)
+  startDeadlineNotifier({ telegram, chatId });
+
   logger.info('Scheduler started — next scrape at 05:30 UTC (09:30 Armenia)');
 }
 
@@ -72,6 +76,7 @@ function stopScheduler() {
     schedulerTask = null;
     logger.info('Scheduler stopped');
   }
+  stopDeadlineNotifier();
 }
 
 module.exports = { startScheduler, stopScheduler };
