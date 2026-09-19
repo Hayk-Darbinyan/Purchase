@@ -1,5 +1,19 @@
 require("dotenv").config();
 
+function timesToCrons(raw, defaultValue = []) {
+  if (!raw) return defaultValue;
+
+  return raw.split(',').map((value) => {
+    const time = value.trim();
+    const match = time.match(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+    if (!match) {
+      throw new Error(`Invalid scheduler time "${time}". Use HH:mm, for example 14:05.`);
+    }
+    const [hour, minute] = time.split(':');
+    return `${Number(minute)} ${Number(hour)} * * *`;
+  });
+}
+
 const config = {
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
   serpApiKey: process.env.SERPAPI_API_KEY || "",
@@ -18,6 +32,13 @@ const config = {
   // Telegram chat ID that receives automatic scrape notifications.
   // Can be a personal chat, group, or channel (use numeric ID or @handle).
   notifyChatId: process.env.NOTIFY_CHAT_ID || "",
+
+  // Optional test schedules. Empty notification lists preserve the hourly
+  // production check; all schedules use Asia/Yerevan in their callers.
+  dailyScrapeCron: timesToCrons(process.env.DAILY_SCRAPE_TIME, ['30 9 * * *'])[0],
+  deadlineNotify54Crons: timesToCrons(process.env.DEADLINE_NOTIFY_5_4_TIMES),
+  deadlineNotify3Crons: timesToCrons(process.env.DEADLINE_NOTIFY_3_TIMES),
+  deadlineNotify2Crons: timesToCrons(process.env.DEADLINE_NOTIFY_2_TIMES),
 };
 
 function assertReadyForBot() {

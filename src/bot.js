@@ -34,29 +34,32 @@ bot.catch((err, ctx) => {
   ctx.reply("An unexpected error occurred. Please try again.").catch(() => {});
 });
 
-// ── Start the bot ────────────────────────────────────────────────────────────
-bot.launch().then(() => {
-  logger.info("Bot started");
-
-  // Start daily scrape scheduler (09:30 Armenia time / 05:30 UTC)
-  // Notifications go to NOTIFY_CHAT_ID (or silently if not set)
-  startScheduler({
-    telegram: bot.telegram,
-    chatId: config.notifyChatId || null,
-  });
+// ── Start schedulers and the bot ─────────────────────────────────────────────
+// Scheduler initialization must not wait for Telegram polling to resolve.
+startScheduler({
+  telegram: bot.telegram,
+  chatId: config.notifyChatId || null,
 });
+
+bot.launch()
+  .then(() => {
+    logger.info("Bot started");
+  })
+  .catch((err) => {
+    logger.error("Bot failed to start", { error: err.message });
+  });
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-const PORT = process.env.PORT || 3000;
+// const PORT = process.env.PORT || 3000;
 
-const healthServer = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("OK");
-});
+// const healthServer = http.createServer((req, res) => {
+//   res.writeHead(200, { "Content-Type": "text/plain" });
+//   res.end("OK");
+// });
 
-healthServer.listen(PORT, "0.0.0.0", () => {
-  logger.info(`HTTP health server listening on port ${PORT}`);
-});
+// healthServer.listen(PORT, "0.0.0.0", () => {
+//   logger.info(`HTTP health server listening on port ${PORT}`);
+// });

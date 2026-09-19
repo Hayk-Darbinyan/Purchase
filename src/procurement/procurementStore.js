@@ -27,6 +27,7 @@ const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STORE_PATH = path.join(DATA_DIR, 'procurement-tenders.json');
+const ARMENIA_TIMEZONE = 'Asia/Yerevan';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -150,18 +151,33 @@ function priceRangeFor(price) {
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
+function datePartsInTimeZone(date, timeZone = ARMENIA_TIMEZONE) {
+  return Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(date)
+      .filter(({ type }) => type !== 'literal')
+      .map(({ type, value }) => [type, Number(value)])
+  );
+}
+
 /**
- * Parses an ISO / "YYYY-MM-DD HH:mm:ss" date string to a Date, or null.
+ * Parses tender dates, whose timezone-less values are Armenia local time.
  */
 function parseDate(str) {
   if (!str) return null;
-  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?/);
+  const value = String(str).trim();
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
   if (m) {
     const [, y, mo, d, hh = '00', mm = '00', ss = '00'] = m;
-    const dt = new Date(`${y}-${mo}-${d}T${hh}:${mm}:${ss}`);
+    const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mm), Number(ss)) - 4 * 60 * 60 * 1000);
     return isNaN(dt.getTime()) ? null : dt;
   }
-  const dt = new Date(str);
+  const dt = new Date(value);
   return isNaN(dt.getTime()) ? null : dt;
 }
 
@@ -184,9 +200,10 @@ function daysUntilDeadline(endDateStr) {
   if (deadline.getTime() < Date.now()) {
     return -1;
   }
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const deadlineStart = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+  const nowParts = datePartsInTimeZone(new Date());
+  const deadlineParts = datePartsInTimeZone(deadline);
+  const todayStart = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+  const deadlineStart = Date.UTC(deadlineParts.year, deadlineParts.month - 1, deadlineParts.day);
   const diffDays = Math.round((deadlineStart - todayStart) / (1000 * 60 * 60 * 24));
   return Math.max(0, diffDays);
 }
@@ -202,4 +219,5 @@ module.exports = {
   parseDate,
   isOverdue,
   daysUntilDeadline,
+  ARMENIA_TIMEZONE,
 };

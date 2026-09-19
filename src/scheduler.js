@@ -4,7 +4,7 @@
  * Schedules the daily automatic scrape at 09:30 AM Armenia Standard Time
  * (UTC+4 — no DST observed).
  *
- * 09:30 Armenia = 05:30 UTC → cron: "30 5 * * *"
+ * 09:30 Armenia → cron: "30 9 * * *" in the Asia/Yerevan timezone.
  *
  * Usage:
  *   const { startScheduler } = require('./scheduler');
@@ -13,11 +13,13 @@
 
 const cron = require('node-cron');
 const logger = require('./logger');
+const { config } = require('./config');
 const { runFullScrape } = require('./bot/scraperActions');
 const { startDeadlineNotifier, stopDeadlineNotifier } = require('./procurement/deadlineNotifier');
 
-// 09:30 AM Armenia time = 05:30 AM UTC (Armenia is UTC+4, no DST)
-const SCRAPE_CRON = '30 5 * * *';
+const ARMENIA_TIMEZONE = 'Asia/Yerevan';
+const SCRAPE_CRON = config.dailyScrapeCron;
+const DAILY_SCRAPE_TIME = process.env.DAILY_SCRAPE_TIME || '09:30';
 
 let schedulerTask = null;
 
@@ -42,7 +44,7 @@ function startScheduler({ telegram, chatId }) {
 
   logger.info('Starting daily scrape scheduler', {
     schedule: SCRAPE_CRON,
-    timezone: 'UTC (09:30 Armenia / 05:30 UTC)',
+    timezone: ARMENIA_TIMEZONE,
     chatId: chatId || 'not configured',
   });
 
@@ -57,14 +59,18 @@ function startScheduler({ telegram, chatId }) {
       }
     },
     {
-      timezone: 'UTC', // cron times are in UTC; we've already converted to UTC above
+      timezone: ARMENIA_TIMEZONE,
     }
   );
+
+  logger.info('Daily scrape next run calculated', {
+    nextRun: schedulerTask.getNextRun()?.toString() || 'unknown',
+  });
 
   // Start deadline notifications scheduler (hourly checks)
   startDeadlineNotifier({ telegram, chatId });
 
-  logger.info('Scheduler started — next scrape at 05:30 UTC (09:30 Armenia)');
+  logger.info(`Scheduler started — daily scrape at ${DAILY_SCRAPE_TIME} Armenia time`);
 }
 
 /**
@@ -79,4 +85,4 @@ function stopScheduler() {
   stopDeadlineNotifier();
 }
 
-module.exports = { startScheduler, stopScheduler };
+module.exports = { startScheduler, stopScheduler, SCRAPE_CRON, ARMENIA_TIMEZONE, DAILY_SCRAPE_TIME };

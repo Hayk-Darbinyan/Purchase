@@ -22,7 +22,13 @@ const cron = require('node-cron');
 const { Markup } = require('telegraf');
 
 const logger = require('../logger');
-const { getAllTenders, daysUntilDeadline, markSubmitted } = require('./procurementStore');
+const { config } = require('../config');
+const {
+  getAllTenders,
+  daysUntilDeadline,
+  markSubmitted,
+  ARMENIA_TIMEZONE,
+} = require('./procurementStore');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STATE_PATH = path.join(DATA_DIR, 'notification-state.json');
@@ -34,6 +40,13 @@ function notificationsPerDay(daysLeft) {
   if (daysLeft === 3) return 2;
   if (daysLeft <= 5) return 1;
   return 0;
+}
+
+function notificationBucket(daysLeft) {
+  if (daysLeft === 4 || daysLeft === 5) return '5_4';
+  if (daysLeft === 3) return '3';
+  if (daysLeft !== null && daysLeft >= 0 && daysLeft <= 2) return '2';
+  return null;
 }
 
 // ── State persistence ─────────────────────────────────────────────────────────
@@ -55,8 +68,18 @@ function saveState(state) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function todayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: ARMENIA_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(new Date())
+      .filter(({ type }) => type !== 'literal')
+      .map(({ type, value }) => [type, value])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function escapeHtml(str) {
@@ -75,7 +98,7 @@ function escapeHtml(str) {
  * For each unsubmitted matched tender with an endDate, determines how many
  * notifications should be sent today and sends the ones still outstanding.
  */
-async function runNotificationCheck({ telegram, chatId }) {
+async function runNotificationCheck({ telegram, chatId, bucket = null, respectSpacing = true }) {
   if (!telegram || !chatId) return;
 
   const tenders = getAllTenders();
@@ -93,6 +116,7 @@ async function runNotificationCheck({ telegram, chatId }) {
     const daysLeft = daysUntilDeadline(tender.endDate);
     const maxToday = notificationsPerDay(daysLeft);
     if (maxToday === 0) continue;
+    if (bucket && notificationBucket(daysLeft) !== bucket) continue;
 
     // Initialise per-tender state
     if (!state[tender.id]) {
@@ -117,7 +141,7 @@ async function runNotificationCheck({ telegram, chatId }) {
     // 2/day -> 4h min interval
     // 5/day -> 2h min interval
     const minIntervalMs = maxToday === 1 ? 0 : (maxToday === 2 ? 4 * 3600 * 1000 : 2 * 3600 * 1000);
-    if (ts.lastSentTime && (nowMs - ts.lastSentTime < minIntervalMs)) {
+    if (respectSpacing && ts.lastSentTime && (nowMs - ts.lastSentTime < minIntervalMs)) {
       continue;
     }
 
@@ -162,7 +186,7 @@ async function runNotificationCheck({ telegram, chatId }) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-let notifierTask = null;
+let notifierTasks = [];
 
 /**
  * Marks a tender as submitted, both in the procurement store and in the
@@ -186,7 +210,7 @@ function markTenderSubmitted(tenderId) {
  * Starts the hourly deadline-notification scheduler.
  */
 function startDeadlineNotifier({ telegram, chatId }) {
-  if (notifierTask) {
+  if (notifierTasks.length) {
     logger.warn('Deadline notifier already running — skipping duplicate start');
     return;
   }
@@ -196,7 +220,17 @@ function startDeadlineNotifier({ telegram, chatId }) {
     return;
   }
 
-  logger.info('Starting deadline notification scheduler (runs every hour)');
+  const customSchedules = [
+    { bucket: '5_4', crons: config.deadlineNotify54Crons },
+    { bucket: '3', crons: config.deadlineNotify3Crons },
+    { bucket: '2', crons: config.deadlineNotify2Crons },
+  ];
+  const hasCustomSchedules = customSchedules.some(({ crons }) => crons.length > 0);
+
+  logger.info('Starting deadline notification scheduler', {
+    mode: hasCustomSchedules ? 'configured times' : 'hourly',
+    schedules: customSchedules,
+  });
 
   // Run initial check after a brief delay
   setTimeout(() => {
@@ -205,24 +239,41 @@ function startDeadlineNotifier({ telegram, chatId }) {
     );
   }, 5000);
 
-  // Hourly cron
-  notifierTask = cron.schedule('0 * * * *', async () => {
-    logger.info('Hourly deadline notification check triggered');
-    try {
-      await runNotificationCheck({ telegram, chatId });
-    } catch (err) {
-      logger.error('Deadline notification check failed', { error: err.message });
+  const schedules = hasCustomSchedules
+    ? customSchedules.map(({ bucket, crons }) => ({
+      bucket,
+      crons: crons.length ? crons : ['0 * * * *'],
+      respectSpacing: crons.length === 0,
+    }))
+    : [{ bucket: null, crons: ['0 * * * *'], respectSpacing: true }];
+
+  for (const { bucket, crons, respectSpacing } of schedules) {
+    for (const schedule of crons) {
+      const task = cron.schedule(schedule, async () => {
+        logger.info('Deadline notification check triggered', { schedule, bucket: bucket || 'all' });
+        try {
+          await runNotificationCheck({ telegram, chatId, bucket, respectSpacing });
+        } catch (err) {
+          logger.error('Deadline notification check failed', { error: err.message });
+        }
+      }, { timezone: ARMENIA_TIMEZONE });
+      notifierTasks.push(task);
+      logger.info('Deadline notification next run calculated', {
+        schedule,
+        bucket: bucket || 'all',
+        nextRun: task.getNextRun()?.toString() || 'unknown',
+      });
     }
-  });
+  }
 }
 
 /**
  * Stops the scheduler (for testing or graceful shutdown).
  */
 function stopDeadlineNotifier() {
-  if (notifierTask) {
-    notifierTask.stop();
-    notifierTask = null;
+  if (notifierTasks.length) {
+    notifierTasks.forEach((task) => task.stop());
+    notifierTasks = [];
     logger.info('Deadline notifier stopped');
   }
 }
@@ -232,4 +283,6 @@ module.exports = {
   stopDeadlineNotifier,
   markTenderSubmitted,
   runNotificationCheck,
+  notificationsPerDay,
+  notificationBucket,
 };

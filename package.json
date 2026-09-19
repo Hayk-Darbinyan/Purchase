@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/bot.js",
-    "test": "node --test tests/googleAiModeSource.test.js tests/telegramFormatter.test.js tests/zipSpecExtractor.test.js",
+    "test": "node --test tests/googleAiModeSource.test.js tests/telegramFormatter.test.js tests/zipSpecExtractor.test.js tests/deadlineScheduler.test.js",
     "test:local": "node scripts/testLocal.js tests/fixtures/sample-tender.docx",
     "extract:docx": "node scripts/extractDocxData.js"
   },
