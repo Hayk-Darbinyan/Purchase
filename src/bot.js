@@ -53,13 +53,13 @@ bot.launch()
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-// const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-// const healthServer = http.createServer((req, res) => {
-//   res.writeHead(200, { "Content-Type": "text/plain" });
-//   res.end("OK");
-// });
+const healthServer = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("OK");
+});
 
-// healthServer.listen(PORT, "0.0.0.0", () => {
-//   logger.info(`HTTP health server listening on port ${PORT}`);
-// });
+healthServer.listen(PORT, "0.0.0.0", () => {
+  logger.info(`HTTP health server listening on port ${PORT}`);
+});
